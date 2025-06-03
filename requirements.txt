@@ -4,8 +4,8 @@ langchain-community
 langchain-openai
 langchain-core
 python-dotenv
-chromadb==0.3.29
-protobuf>=4.21.6,<5.0.0
+chromadb==1.0.12
+protobuf==5.29.5
 pypdf
 boto3
 requests
