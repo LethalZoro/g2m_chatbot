@@ -33,6 +33,10 @@ from botocore.exceptions import NoCredentialsError, ClientError
 
 # load_dotenv()
 
+
+st.set_page_config(page_title="PDF Document Chatbot", page_icon="🤖")
+st.title("📄 PDF Document Chatbot")
+
 @st.cache_resource
 def initialize_vector_store():
     """Initialize vector store - local or download from S3"""
@@ -322,8 +326,7 @@ def chat(session_id, k=20):
             print("Error:", e)
 
 # STREAMLIT UI
-st.set_page_config(page_title="PDF Document Chatbot", page_icon="🤖")
-st.title("📄 PDF Document Chatbot")
+
 
 # Initialize session state
 if "messages" not in st.session_state:
