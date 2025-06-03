@@ -182,7 +182,7 @@ def verify_vector_store(persist_directory):
         for root, dirs, files in os.walk(persist_directory):
             for file in files:
                 all_files.append(os.path.relpath(os.path.join(root, file), persist_directory))
-        st.write(f"Debug: All files in vector store: {all_files}")
+        # st.write(f"Debug: All files in vector store: {all_files}")
         
         # Try to load the vector store to ensure it's accessible
         try:
@@ -193,10 +193,10 @@ def verify_vector_store(persist_directory):
             
             # Try a simple operation to verify it works
             collection_count = test_vectordb._collection.count()
-            st.write(f"Debug: Vector store contains {collection_count} documents")
+            # st.write(f"Debug: Vector store contains {collection_count} documents")
             
             if collection_count == 0:
-                st.warning("⚠️ Vector store is accessible but contains 0 documents. This might be normal if it's a fresh database.")
+                st.warning("⚠️ Vector store is not accessible due to some error contact your administrator for further assistance.")
                 # For now, let's continue even with 0 documents
                 return True  # Changed from False to True to allow empty databases
             
@@ -472,24 +472,24 @@ with chat_container:
         else:
             st.chat_message("assistant").markdown(msg["content"])
 
-# Sidebar with debug info
-with st.sidebar:
-    st.header("Debug Information")
+# # Sidebar with debug info
+# with st.sidebar:
+#     st.header("Debug Information")
     
-    try:
-        doc_count = vectordb._collection.count() if hasattr(vectordb, '_collection') else "Unknown"
-        st.write(f"📊 Documents in vector store: {doc_count}")
-    except:
-        st.write("📊 Documents in vector store: Unable to count")
+#     try:
+#         doc_count = vectordb._collection.count() if hasattr(vectordb, '_collection') else "Unknown"
+#         st.write(f"📊 Documents in vector store: {doc_count}")
+#     except:
+#         st.write("📊 Documents in vector store: Unable to count")
     
-    st.write(f"📁 Vector store path: {persist_directory}")
+#     st.write(f"📁 Vector store path: {persist_directory}")
     
-    if os.path.exists(persist_directory):
-        files = os.listdir(persist_directory)
-        st.write(f"📄 Files in vector store: {files}")
+#     if os.path.exists(persist_directory):
+#         files = os.listdir(persist_directory)
+#         st.write(f"📄 Files in vector store: {files}")
     
-    if st.button("🔄 Refresh Vector Store Info"):
-        st.rerun()
+#     if st.button("🔄 Refresh Vector Store Info"):
+#         st.rerun()
 
 # Clear chat button
 if st.button("Clear chat"):
