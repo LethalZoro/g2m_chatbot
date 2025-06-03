@@ -1,7 +1,7 @@
 import os
-__import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+# __import__('pysqlite3')
+# import sys
+# sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 # Fix protobuf compatibility issue
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
@@ -134,6 +134,9 @@ def initialize_vector_store():
             # Verify extraction was successful
             extracted_files = os.listdir('vector_store') if os.path.exists('vector_store') else []
             st.write(f"Extracted files: {extracted_files}")
+            st.write("Contents of vector_store directory:", os.listdir("vector_store"))
+            st.write("Contents of vector_store directory:", os.listdir("."))
+
             
             # Check for critical files
             chroma_db_path = os.path.join("vector_store")
@@ -170,11 +173,6 @@ def verify_vector_store(persist_directory):
     """Verify that the vector store is properly initialized and accessible"""
     try:
         if not os.path.exists(persist_directory):
-            return False
-        
-        # Check for critical Chroma files
-        chroma_db_path = os.path.join(persist_directory)
-        if not os.path.exists(chroma_db_path):
             return False
             
         # Try to load the vector store to ensure it's accessible
