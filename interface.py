@@ -38,87 +38,91 @@ def initialize_vector_store():
     st.info("🔄 Loading vector store from S3... This may take 2-3 minutes on first load.")
     
     try:
+        # Debug: Check if secrets are available
+        try:
+            access_key = st.secrets["AWS_ACCESS_KEY_ID"]
+            secret_key = st.secrets["AWS_SECRET_ACCESS_KEY"]
+            region = st.secrets.get("AWS_REGION", "us-east-1")
+            bucket_name = st.secrets["S3_BUCKET_NAME"]
+            st.write(f"Debug: Using bucket '{bucket_name}' in region '{region}'")
+        except KeyError as e:
+            st.error(f"❌ Missing secret: {e}")
+            st.stop()
+        
         # Initialize S3 client with secrets
         s3_client = boto3.client(
             's3',
-            aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
-            aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"],
-            region_name=st.secrets.get("AWS_REGION", "us-east-1")
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name=region
         )
         
-        bucket_name = st.secrets["S3_BUCKET_NAME"]
         object_key = "vector_store.zip"
         local_zip_path = "vector_store.zip"
+        
+        # Test S3 connection first
+        try:
+            st.write("Debug: Testing S3 connection...")
+            s3_client.head_bucket(Bucket=bucket_name)
+            st.write("✅ S3 bucket accessible")
+            
+            # Check if file exists
+            response = s3_client.head_object(Bucket=bucket_name, Key=object_key)
+            total_size = response['ContentLength']
+            st.write(f"✅ File found: {total_size / (1024*1024):.1f}MB")
+            
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            st.error(f"❌ S3 connection test failed ({error_code}): {e}")
+            st.stop()
         
         # Create progress indicators
         progress_bar = st.progress(0)
         status_text = st.empty()
+        status_text.text(f"📥 Downloading {total_size / (1024*1024):.1f}MB from S3...")
         
-        # Get file size for progress tracking
+        # Download with simpler approach (no callback for now)
         try:
-            response = s3_client.head_object(Bucket=bucket_name, Key=object_key)
-            total_size = response['ContentLength']
-            status_text.text(f"📥 Downloading {total_size / (1024*1024):.1f}MB from S3...")
-        except ClientError:
-            total_size = 0
-            status_text.text("📥 Downloading from S3...")
-        
-        # Download with progress callback
-        downloaded_bytes = [0]  # Use list to allow modification in nested function
-        
-        def download_callback(bytes_transferred):
-            downloaded_bytes[0] += bytes_transferred
-            if total_size > 0:
-                progress = min(downloaded_bytes[0] / total_size, 1.0)
-                progress_bar.progress(progress)
-                status_text.text(f"Downloaded: {downloaded_bytes[0] / (1024*1024):.1f}MB / {total_size / (1024*1024):.1f}MB")
-        
-        # Download file
-        s3_client.download_file(
-            bucket_name, 
-            object_key, 
-            local_zip_path,
-            Callback=download_callback if total_size > 0 else None
-        )
+            st.write("Debug: Starting download...")
+            s3_client.download_file(bucket_name, object_key, local_zip_path)
+            st.write("✅ Download completed")
+            
+        except Exception as download_error:
+            st.error(f"❌ Download failed: {download_error}")
+            # Try to get more specific error info
+            if hasattr(download_error, 'response'):
+                st.error(f"Response: {download_error.response}")
+            st.stop()
         
         # Extract
         status_text.text("📦 Extracting vector store...")
         progress_bar.progress(0.9)
         
-        with zipfile.ZipFile(local_zip_path, 'r') as zip_ref:
-            zip_ref.extractall(".")
+        try:
+            with zipfile.ZipFile(local_zip_path, 'r') as zip_ref:
+                zip_ref.extractall(".")
+            st.write("✅ Extraction completed")
+        except Exception as extract_error:
+            st.error(f"❌ Extraction failed: {extract_error}")
+            st.stop()
         
         # Cleanup
-        os.remove(local_zip_path)
+        try:
+            os.remove(local_zip_path)
+        except:
+            pass  # Don't fail if cleanup fails
         
         # Clear progress indicators
         progress_bar.progress(1.0)
         status_text.text("✅ Vector store loaded successfully!")
         
-        # Clear after short delay
-        import time
-        time.sleep(1)
-        progress_bar.empty()
-        status_text.empty()
-        
         return "vector_store"
         
-    except NoCredentialsError:
-        st.error("❌ AWS credentials not found. Please check your Streamlit secrets.")
-        st.stop()
-    except ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-        if error_code == 'NoSuchBucket':
-            st.error(f"❌ S3 bucket '{bucket_name}' not found.")
-        elif error_code == 'NoSuchKey':
-            st.error(f"❌ File 'vector_store.zip' not found in bucket '{bucket_name}'.")
-        elif error_code == '403':
-            st.error("❌ Access denied. Check your AWS credentials and bucket permissions.")
-        else:
-            st.error(f"❌ AWS S3 error ({error_code}): {e}")
-        st.stop()
     except Exception as e:
-        st.error(f"❌ Failed to download vector store: {e}")
+        st.error(f"❌ Unexpected error: {type(e).__name__}: {str(e)}")
+        # Show more debug info
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
         st.stop()
 
 # Replace your current vector store initialization with:
