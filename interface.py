@@ -28,16 +28,20 @@ text_splitter = RecursiveCharacterTextSplitter(
 
 # Initialize or load vectorstore with optimized batch size
 persist_directory = os.path.join(os.path.dirname(__file__), "vector_store")
+# persist_directory = r"D:\Coding\Job\Salik Labs\g2m_AI\vector_store"
 
 if not os.path.exists(persist_directory):
     # Fallback for when vector store doesn't exist
     st.error("Vector store not found. Please ensure vector_store folder is in your repository.")
     st.stop()
 
-# if os.path.exists(persist_directory):
 vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
+
+
+# if os.path.exists(persist_directory):
+#     vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
 # else:
-    # vectordb = Chroma(embedding_function=embedding_model, persist_directory=persist_directory)
+#     vectordb = Chroma(embedding_function=embedding_model, persist_directory=persist_directory)
 
 # LLM setup
 llm = ChatOpenAI(model="gpt-4o")
