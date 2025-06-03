@@ -10,13 +10,119 @@ from langchain_core.runnables import RunnableLambda, RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.output_parsers import StrOutputParser
 from operator import itemgetter
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 import os
 from tqdm import tqdm
 import concurrent.futures
 import glob
 
-load_dotenv()
+import boto3
+import zipfile
+
+import requests
+from botocore.exceptions import NoCredentialsError, ClientError
+
+# load_dotenv()
+
+@st.cache_resource
+def initialize_vector_store():
+    """Initialize vector store - local or download from S3"""
+    local_path = os.path.join(os.path.dirname(__file__), "vector_store")
+    
+    # Check if running locally (vector store already exists)
+    if os.path.exists(local_path):
+        st.info("📁 Using local vector store")
+        return local_path
+    
+    # Running on cloud - download from S3
+    st.info("🔄 Loading vector store from S3... This may take 2-3 minutes on first load.")
+    
+    try:
+        # Initialize S3 client with secrets
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
+            aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"],
+            region_name=st.secrets.get("AWS_REGION", "us-east-1")
+        )
+        
+        bucket_name = st.secrets["S3_BUCKET_NAME"]
+        object_key = "vector_store.zip"
+        local_zip_path = "vector_store.zip"
+        
+        # Create progress indicators
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Get file size for progress tracking
+        try:
+            response = s3_client.head_object(Bucket=bucket_name, Key=object_key)
+            total_size = response['ContentLength']
+            status_text.text(f"📥 Downloading {total_size / (1024*1024):.1f}MB from S3...")
+        except ClientError:
+            total_size = 0
+            status_text.text("📥 Downloading from S3...")
+        
+        # Download with progress callback
+        downloaded_bytes = [0]  # Use list to allow modification in nested function
+        
+        def download_callback(bytes_transferred):
+            downloaded_bytes[0] += bytes_transferred
+            if total_size > 0:
+                progress = min(downloaded_bytes[0] / total_size, 1.0)
+                progress_bar.progress(progress)
+                status_text.text(f"Downloaded: {downloaded_bytes[0] / (1024*1024):.1f}MB / {total_size / (1024*1024):.1f}MB")
+        
+        # Download file
+        s3_client.download_file(
+            bucket_name, 
+            object_key, 
+            local_zip_path,
+            Callback=download_callback if total_size > 0 else None
+        )
+        
+        # Extract
+        status_text.text("📦 Extracting vector store...")
+        progress_bar.progress(0.9)
+        
+        with zipfile.ZipFile(local_zip_path, 'r') as zip_ref:
+            zip_ref.extractall(".")
+        
+        # Cleanup
+        os.remove(local_zip_path)
+        
+        # Clear progress indicators
+        progress_bar.progress(1.0)
+        status_text.text("✅ Vector store loaded successfully!")
+        
+        # Clear after short delay
+        import time
+        time.sleep(1)
+        progress_bar.empty()
+        status_text.empty()
+        
+        return "vector_store"
+        
+    except NoCredentialsError:
+        st.error("❌ AWS credentials not found. Please check your Streamlit secrets.")
+        st.stop()
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+        if error_code == 'NoSuchBucket':
+            st.error(f"❌ S3 bucket '{bucket_name}' not found.")
+        elif error_code == 'NoSuchKey':
+            st.error(f"❌ File 'vector_store.zip' not found in bucket '{bucket_name}'.")
+        elif error_code == '403':
+            st.error("❌ Access denied. Check your AWS credentials and bucket permissions.")
+        else:
+            st.error(f"❌ AWS S3 error ({error_code}): {e}")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Failed to download vector store: {e}")
+        st.stop()
+
+# Replace your current vector store initialization with:
+
 
 # Setup embeddings and text splitter with optimized settings
 embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
@@ -27,7 +133,8 @@ text_splitter = RecursiveCharacterTextSplitter(
 )
 
 # Initialize or load vectorstore with optimized batch size
-persist_directory = os.path.join(os.path.dirname(__file__), "vector_store")
+persist_directory = initialize_vector_store()
+
 # persist_directory = r"D:\Coding\Job\Salik Labs\g2m_AI\vector_store"
 
 if not os.path.exists(persist_directory):
