@@ -33,8 +33,8 @@ from botocore.exceptions import NoCredentialsError, ClientError
 # load_dotenv()
 embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=2000,
-    chunk_overlap=400,
+    chunk_size=2048,
+    chunk_overlap=512,
     separators=["\n\n", "\n", ".", " ", ""]
 )
 
@@ -281,7 +281,7 @@ Instructions:
 - Format your citations like: "According to [Document Name] (Page X)..." or "As mentioned in [Document Name] (Page X)..."
 - If information comes from multiple sources, cite all relevant sources
 - Use the conversation history to provide contextual responses when relevant
-- If no relevant context is found, say "I don't have enough information in the provided documents to answer this question."
+- if not enough context is provided tell the user that but still try to answer the question based on the context provided
 """
 
 # Create prompt template
