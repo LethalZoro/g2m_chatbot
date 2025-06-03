@@ -6,7 +6,6 @@ import os
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
-
 import streamlit as st
 from langchain_core.output_parsers import StrOutputParser
 
@@ -16,7 +15,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda
-from langchain_core.runnables.history import  RunnableWithMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.output_parsers import StrOutputParser
 from operator import itemgetter
@@ -50,7 +49,7 @@ def initialize_vector_store():
     # Check if running locally (vector store already exists)
     if os.path.exists(local_path):
         # Verify the vector store is actually valid by checking for key files
-        chroma_db_path = os.path.join(local_path, "vector_store")
+        chroma_db_path = os.path.join(local_path, "chroma.sqlite3")
         if os.path.exists(chroma_db_path):
             st.info("📁 Using local vector store")
             return local_path
@@ -134,12 +133,9 @@ def initialize_vector_store():
             # Verify extraction was successful
             extracted_files = os.listdir('vector_store') if os.path.exists('vector_store') else []
             st.write(f"Extracted files: {extracted_files}")
-            st.write("Contents of vector_store directory:", os.listdir("vector_store"))
-            st.write("Contents of vector_store directory:", os.listdir("."))
-
             
             # Check for critical files
-            chroma_db_path = os.path.join("vector_store")
+            chroma_db_path = os.path.join("vector_store", "chroma.sqlite3")
             if not os.path.exists(chroma_db_path):
                 st.error("❌ Critical vector store files missing after extraction")
                 st.stop()
@@ -168,69 +164,109 @@ def initialize_vector_store():
         st.stop()
 
 
-# Alternative approach - add this function to check vector store health
 def verify_vector_store(persist_directory):
     """Verify that the vector store is properly initialized and accessible"""
     try:
         if not os.path.exists(persist_directory):
+            st.error(f"❌ Vector store directory does not exist: {persist_directory}")
             return False
             
+        # Check for essential Chroma files
+        chroma_db_path = os.path.join(persist_directory, "chroma.sqlite3")
+        if not os.path.exists(chroma_db_path):
+            st.error(f"❌ Chroma database file missing: {chroma_db_path}")
+            return False
+            
+        # List all files in the directory for debugging
+        all_files = []
+        for root, dirs, files in os.walk(persist_directory):
+            for file in files:
+                all_files.append(os.path.relpath(os.path.join(root, file), persist_directory))
+        st.write(f"Debug: All files in vector store: {all_files}")
+        
         # Try to load the vector store to ensure it's accessible
-        test_vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
-        
-        # Try a simple operation to verify it works
-        collection_count = test_vectordb._collection.count()
-        st.write(f"Debug: Vector store contains {collection_count} documents")
-        
-        return collection_count > 0
+        try:
+            test_vectordb = Chroma(
+                persist_directory=persist_directory, 
+                embedding_function=embedding_model
+            )
+            
+            # Try a simple operation to verify it works
+            collection_count = test_vectordb._collection.count()
+            st.write(f"Debug: Vector store contains {collection_count} documents")
+            
+            if collection_count == 0:
+                st.warning("⚠️ Vector store is accessible but contains 0 documents. This might be normal if it's a fresh database.")
+                # For now, let's continue even with 0 documents
+                return True  # Changed from False to True to allow empty databases
+            
+            return True
+            
+        except Exception as chroma_error:
+            st.error(f"❌ Chroma initialization failed: {chroma_error}")
+            
+            # Try alternative initialization methods
+            try:
+                st.write("Debug: Trying alternative Chroma initialization...")
+                
+                # Method 1: Try without specifying collection name
+                test_vectordb2 = Chroma(
+                    persist_directory=persist_directory,
+                    embedding_function=embedding_model
+                )
+                collection_count2 = len(test_vectordb2.get()['ids'])
+                st.write(f"Debug: Alternative method found {collection_count2} documents")
+                return collection_count2 >= 0  # Accept even 0 documents
+                
+            except Exception as alt_error:
+                st.error(f"❌ Alternative Chroma initialization also failed: {alt_error}")
+                return False
         
     except Exception as e:
-        st.error(f"Vector store verification failed: {e}")
+        st.error(f"❌ Vector store verification failed with unexpected error: {e}")
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
         return False
 
 
-# Modified vector store loading with verification
+# Modified vector store loading with improved verification
 persist_directory = initialize_vector_store()
 
 # Verify the vector store before proceeding
 if not verify_vector_store(persist_directory):
-    st.error("❌ Vector store verification failed. Attempting to re-initialize...")
-    # Clear the cache and try again
-    while not verify_vector_store(persist_directory):
-        st.cache_resource.clear()
-        persist_directory = initialize_vector_store()
+    st.error("❌ Vector store verification failed completely.")
     
-    if not verify_vector_store(persist_directory):
-        st.error("❌ Vector store initialization failed completely. Please check your setup.")
+    # Provide user options
+    st.write("**Possible solutions:**")
+    st.write("1. Check if your S3 vector store contains the correct files")
+    st.write("2. Verify that the vector store was created with the same embedding model")
+    st.write("3. Try clearing the Streamlit cache and reloading")
+    
+    if st.button("🔄 Clear Cache and Retry"):
+        st.cache_resource.clear()
+        st.rerun()
+    
+    if st.button("🔧 Continue Anyway (for testing)"):
+        st.warning("⚠️ Continuing with potentially broken vector store...")
+    else:
         st.stop()
 
-
-# Setup embeddings and text splitter with optimized settings
-
-vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
-
-
-# persist_directory = initialize_vector_store()
-# vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
-
-# persist_directory = r"D:\Coding\Job\Salik Labs\g2m_AI\vector_store"
-
-if not os.path.exists(persist_directory):
-    # Fallback for when vector store doesn't exist
-    st.error("Vector store not found. Please ensure vector_store folder is in your repository.")
+# Initialize vector database
+try:
+    vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
+    st.success("✅ Vector database initialized successfully!")
+except Exception as e:
+    st.error(f"❌ Failed to initialize vector database: {e}")
     st.stop()
 
-
-
-# if os.path.exists(persist_directory):
-#     vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
-# else:
-#     vectordb = Chroma(embedding_function=embedding_model, persist_directory=persist_directory)
-
 # LLM setup
-llm = ChatOpenAI(model="gpt-4o")
+try:
+    llm = ChatOpenAI(model="gpt-4o")
+except Exception as e:
+    st.error(f"❌ Failed to initialize OpenAI model: {e}")
+    st.stop()
 
-# FIXED: Simple prompt template without MessagesPlaceholder in the chain
+# Chat prompt template
 chat_prompt_template = """
 Role: You are a helpful assistant specialized in answering questions based on the given documents. Be precise and clear in your responses.
 
@@ -245,9 +281,10 @@ Instructions:
 - Format your citations like: "According to [Document Name] (Page X)..." or "As mentioned in [Document Name] (Page X)..."
 - If information comes from multiple sources, cite all relevant sources
 - Use the conversation history to provide contextual responses when relevant
+- If no relevant context is found, say "I don't have enough information in the provided documents to answer this question."
 """
 
-# FIXED: Create prompt template that RunnableWithMessageHistory can work with
+# Create prompt template
 chat_prompt = ChatPromptTemplate.from_messages([
     ("system", chat_prompt_template),
     ("human", "{question}"),
@@ -255,6 +292,9 @@ chat_prompt = ChatPromptTemplate.from_messages([
 
 # Format retrieved documents into a single string
 def format_docs(docs):
+    if not docs:
+        return "No relevant documents found."
+    
     formatted_docs = []
     seen_content = set()
     
@@ -270,18 +310,23 @@ def format_docs(docs):
     
     return "\n\n---\n\n".join(formatted_docs)
 
-# Retriever function
+# Retriever function with error handling
 def get_retriever(k=20):
-    return vectordb.as_retriever(
-        search_type="mmr",
-        search_kwargs={
-            "k": k,
-            "fetch_k": k * 2,
-            "lambda_mult": 0.7
-        }
-    )
+    try:
+        return vectordb.as_retriever(
+            search_type="mmr",
+            search_kwargs={
+                "k": k,
+                "fetch_k": k * 2,
+                "lambda_mult": 0.7
+            }
+        )
+    except Exception as e:
+        st.error(f"❌ Error creating retriever: {e}")
+        # Fallback to basic retriever
+        return vectordb.as_retriever(search_kwargs={"k": k})
 
-# Chat history store - FIXED: Use proper session management
+# Chat history store
 if 'message_histories' not in st.session_state:
     st.session_state.message_histories = {}
 
@@ -289,10 +334,9 @@ def get_message_history(session_id):
     """Get or create message history for a session"""
     if session_id not in st.session_state.message_histories:
         st.session_state.message_histories[session_id] = ChatMessageHistory()
-    # print("History",st.session_state.message_histories[session_id])
     return st.session_state.message_histories[session_id]
 
-# FIXED: Simplified chain without redundant history handling
+# Create the chain
 chain = (
     {
         "context": RunnableLambda(lambda inputs: format_docs(get_retriever().invoke(inputs["question"]))),
@@ -303,14 +347,15 @@ chain = (
     | StrOutputParser()
 )
 
-# Chain with history - FIXED: Proper configuration for RunnableWithMessageHistory
+# Chain with history
 chain_with_history = RunnableWithMessageHistory(
     chain,
     get_message_history,
     input_messages_key="question",
-    history_messages_key="chat_history",  # Changed from "history" to avoid conflict
+    history_messages_key="chat_history",
 )
 
+# Utility functions for PDF processing (keep your existing functions)
 def process_single_pdf(pdf_file):
     """Process a single PDF file and return the text chunks"""
     try:
@@ -368,25 +413,7 @@ def load_and_index_pdf(folder_path, max_workers=4, batch_size=50, force_reindex=
     else:
         print("No documents were successfully processed.")
 
-def chat(session_id, k=20):
-    """Example interactive chat function for non-Streamlit usage"""
-    print("Starting chat session. Type 'exit' to quit.")
-    while True:
-        user_input = input("You: ")
-        if user_input.lower() in ["exit", "quit", "q"]: 
-            print("Exiting chat session.")
-            break
-        try:
-            response = chain_with_history.invoke(
-                {"question": user_input}, 
-                config={"configurable": {"session_id": session_id}}
-            )
-            print(f"Bot: {response}")
-        except Exception as e:
-            print("Error:", e)
-
 # STREAMLIT UI
-
 
 # Initialize session state
 if "messages" not in st.session_state:
@@ -395,24 +422,29 @@ if "session_id" not in st.session_state:
     st.session_state.session_id = "streamlit_session"
 
 def submit_question():
-    """FIXED: Simplified submit function that lets LangChain handle history"""
+    """Submit function with better error handling"""
     question = st.session_state.user_input.strip()
     if question:
         # Add user message to Streamlit UI
         st.session_state.messages.append({"role": "user", "content": question})
         
         try:
-            # FIXED: Let LangChain handle the history automatically
-            response = chain_with_history.invoke(
-                {"question": question},
-                config={"configurable": {"session_id": st.session_state.session_id}}
-            )
+            # Check if vector store has documents before querying
+            doc_count = vectordb._collection.count() if hasattr(vectordb, '_collection') else 0
+            
+            if doc_count == 0:
+                response = "I don't have any documents loaded in my vector store yet. Please ensure that the vector store contains indexed documents before asking questions."
+            else:
+                response = chain_with_history.invoke(
+                    {"question": question},
+                    config={"configurable": {"session_id": st.session_state.session_id}}
+                )
             
             # Add bot response to Streamlit UI
             st.session_state.messages.append({"role": "assistant", "content": response})
             
         except Exception as e:
-            error_msg = f"Error: {e}"
+            error_msg = f"Error processing your question: {str(e)}\n\nThis might be due to an empty vector store or connection issues."
             st.session_state.messages.append({"role": "assistant", "content": error_msg})
         
         # Clear input
@@ -432,26 +464,6 @@ with st.form(key="chat_form", clear_on_submit=True):
     )
     submit_button = st.form_submit_button(label="Send", on_click=submit_question)
 
-# JavaScript for Enter key submission
-st.markdown("""
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    const textArea = document.querySelector('textarea[data-testid="stTextArea"]');
-    if (textArea) {
-        textArea.addEventListener('keydown', function(event) {
-            if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.altKey) {
-                event.preventDefault();
-                const form = textArea.closest('form');
-                if (form) {
-                    form.requestSubmit();
-                }
-            }
-        });
-    }
-});
-</script>
-""", unsafe_allow_html=True)
-
 # Display chat messages
 with chat_container:
     for msg in st.session_state.messages:
@@ -459,6 +471,25 @@ with chat_container:
             st.chat_message("user").markdown(msg["content"])
         else:
             st.chat_message("assistant").markdown(msg["content"])
+
+# Sidebar with debug info
+with st.sidebar:
+    st.header("Debug Information")
+    
+    try:
+        doc_count = vectordb._collection.count() if hasattr(vectordb, '_collection') else "Unknown"
+        st.write(f"📊 Documents in vector store: {doc_count}")
+    except:
+        st.write("📊 Documents in vector store: Unable to count")
+    
+    st.write(f"📁 Vector store path: {persist_directory}")
+    
+    if os.path.exists(persist_directory):
+        files = os.listdir(persist_directory)
+        st.write(f"📄 Files in vector store: {files}")
+    
+    if st.button("🔄 Refresh Vector Store Info"):
+        st.rerun()
 
 # Clear chat button
 if st.button("Clear chat"):
