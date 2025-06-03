@@ -1,7 +1,7 @@
 import os
-__import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+# __import__('pysqlite3')
+# import sys
+# sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 # Fix protobuf compatibility issue
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
@@ -40,8 +40,8 @@ st.title("📄 PDF Document Chatbot")
 @st.cache_resource
 def initialize_vector_store():
     """Initialize vector store - local or download from S3"""
+    # local_path = os.path.join(r"D:\Coding\Job\Salik Labs\g2m_AI\vector_store")
     local_path = os.path.join(os.path.dirname(__file__), "vector_store")
-    
     # Check if running locally (vector store already exists)
     if os.path.exists(local_path):
         st.info("📁 Using local vector store")
@@ -115,6 +115,8 @@ def initialize_vector_store():
             with zipfile.ZipFile(local_zip_path, 'r') as zip_ref:
                 zip_ref.extractall(".")
             st.write("✅ Extraction completed")
+            print(f"Extracted files: {os.listdir('vector_store')}")
+            print(f"Current directory contents: {os.listdir('.')}")
         except Exception as extract_error:
             st.error(f"❌ Extraction failed: {extract_error}")
             st.stop()
