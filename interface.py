@@ -15,7 +15,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnableLambda, RunnableWithMessageHistory
+from langchain_core.runnables import RunnableLambda
+from langchain_core.runnables.history import  RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.output_parsers import StrOutputParser
 from operator import itemgetter
