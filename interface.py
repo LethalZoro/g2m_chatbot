@@ -40,12 +40,17 @@ st.title("📄 PDF Document Chatbot")
 @st.cache_resource
 def initialize_vector_store():
     """Initialize vector store - local or download from S3"""
-    # local_path = os.path.join(r"D:\Coding\Job\Salik Labs\g2m_AI\vector_store")
     local_path = os.path.join(os.path.dirname(__file__), "vector_store")
+    
     # Check if running locally (vector store already exists)
     if os.path.exists(local_path):
-        st.info("📁 Using local vector store")
-        return local_path
+        # Verify the vector store is actually valid by checking for key files
+        chroma_db_path = os.path.join(local_path, "chroma.sqlite3")
+        if os.path.exists(chroma_db_path):
+            st.info("📁 Using local vector store")
+            return local_path
+        else:
+            st.warning("⚠️ Local vector store exists but appears incomplete, re-downloading...")
     
     # Running on cloud - download from S3
     st.info("🔄 Loading vector store from S3... This may take 2-3 minutes on first load.")
@@ -112,16 +117,30 @@ def initialize_vector_store():
         progress_bar.progress(0.9)
         
         try:
+            # Remove existing vector_store directory if it exists but is incomplete
+            if os.path.exists("vector_store"):
+                import shutil
+                shutil.rmtree("vector_store")
+            
             with zipfile.ZipFile(local_zip_path, 'r') as zip_ref:
                 zip_ref.extractall(".")
             st.write("✅ Extraction completed")
-            print(f"Extracted files: {os.listdir('vector_store')}")
-            print(f"Current directory contents: {os.listdir('.')}")
+            
+            # Verify extraction was successful
+            extracted_files = os.listdir('vector_store') if os.path.exists('vector_store') else []
+            st.write(f"Extracted files: {extracted_files}")
+            
+            # Check for critical files
+            chroma_db_path = os.path.join("vector_store", "chroma.sqlite3")
+            if not os.path.exists(chroma_db_path):
+                st.error("❌ Critical vector store files missing after extraction")
+                st.stop()
+                
         except Exception as extract_error:
             st.error(f"❌ Extraction failed: {extract_error}")
             st.stop()
         
-        # Cleanup
+        # Cleanup zip file
         try:
             os.remove(local_zip_path)
         except:
@@ -140,7 +159,46 @@ def initialize_vector_store():
         st.error(f"Traceback: {traceback.format_exc()}")
         st.stop()
 
-# Replace your current vector store initialization with:
+
+# Alternative approach - add this function to check vector store health
+def verify_vector_store(persist_directory):
+    """Verify that the vector store is properly initialized and accessible"""
+    try:
+        if not os.path.exists(persist_directory):
+            return False
+        
+        # Check for critical Chroma files
+        chroma_db_path = os.path.join(persist_directory, "chroma.sqlite3")
+        if not os.path.exists(chroma_db_path):
+            return False
+            
+        # Try to load the vector store to ensure it's accessible
+        test_vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
+        
+        # Try a simple operation to verify it works
+        collection_count = test_vectordb._collection.count()
+        st.write(f"Debug: Vector store contains {collection_count} documents")
+        
+        return collection_count > 0
+        
+    except Exception as e:
+        st.error(f"Vector store verification failed: {e}")
+        return False
+
+
+# Modified vector store loading with verification
+persist_directory = initialize_vector_store()
+
+# Verify the vector store before proceeding
+if not verify_vector_store(persist_directory):
+    st.error("❌ Vector store verification failed. Attempting to re-initialize...")
+    # Clear the cache and try again
+    st.cache_resource.clear()
+    persist_directory = initialize_vector_store()
+    
+    if not verify_vector_store(persist_directory):
+        st.error("❌ Vector store initialization failed completely. Please check your setup.")
+        st.stop()
 
 
 # Setup embeddings and text splitter with optimized settings
@@ -150,9 +208,11 @@ text_splitter = RecursiveCharacterTextSplitter(
     chunk_overlap=400,
     separators=["\n\n", "\n", ".", " ", ""]
 )
+vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
 
-# Initialize or load vectorstore with optimized batch size
-persist_directory = initialize_vector_store()
+
+# persist_directory = initialize_vector_store()
+# vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
 
 # persist_directory = r"D:\Coding\Job\Salik Labs\g2m_AI\vector_store"
 
@@ -161,7 +221,6 @@ if not os.path.exists(persist_directory):
     st.error("Vector store not found. Please ensure vector_store folder is in your repository.")
     st.stop()
 
-vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
 
 
 # if os.path.exists(persist_directory):
