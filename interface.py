@@ -1,3 +1,10 @@
+import os
+
+# Fix protobuf compatibility issue
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
+
 import streamlit as st
 from langchain_core.output_parsers import StrOutputParser
 
@@ -10,8 +17,7 @@ from langchain_core.runnables import RunnableLambda, RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.output_parsers import StrOutputParser
 from operator import itemgetter
-# from dotenv import load_dotenv
-import os
+
 from tqdm import tqdm
 import concurrent.futures
 import glob

@@ -5,9 +5,7 @@ langchain-openai
 langchain-core
 python-dotenv
 chromadb==0.4.15
-protobuf==3.20.3
+protobuf>=4.21.6,<5.0.0
 pypdf
 boto3
 requests
-grpcio==1.60.1
-grpcio-status==1.60.1
