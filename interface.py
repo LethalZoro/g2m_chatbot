@@ -198,8 +198,9 @@ persist_directory = initialize_vector_store()
 if not verify_vector_store(persist_directory):
     st.error("❌ Vector store verification failed. Attempting to re-initialize...")
     # Clear the cache and try again
-    st.cache_resource.clear()
-    persist_directory = initialize_vector_store()
+    while not verify_vector_store(persist_directory):
+        st.cache_resource.clear()
+        persist_directory = initialize_vector_store()
     
     if not verify_vector_store(persist_directory):
         st.error("❌ Vector store initialization failed completely. Please check your setup.")
