@@ -1,3 +1,6 @@
+import streamlit as st
+from langchain_core.output_parsers import StrOutputParser
+
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -13,35 +16,38 @@ from tqdm import tqdm
 import concurrent.futures
 import glob
 
-
 load_dotenv()
+
 # Setup embeddings and text splitter with optimized settings
 embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=2000,  # Increased chunk size for better table coverage
-    chunk_overlap=400,  # Increased overlap to prevent content loss
-    separators=["\n\n", "\n", ".", " ", ""]  # Added period separator for better structure preservation
+    chunk_size=2000,
+    chunk_overlap=400,
+    separators=["\n\n", "\n", ".", " ", ""]
 )
 
 # Initialize or load vectorstore with optimized batch size
-persist_directory = r"D:\Coding\Job\Salik Labs\g2m_AI\vector_store"
-if os.path.exists(persist_directory):
-    vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
-else:
-    vectordb = Chroma(embedding_function=embedding_model, persist_directory=persist_directory)
+persist_directory = os.path.join(os.path.dirname(__file__), "vector_store")
+
+if not os.path.exists(persist_directory):
+    # Fallback for when vector store doesn't exist
+    st.error("Vector store not found. Please ensure vector_store folder is in your repository.")
+    st.stop()
+
+# if os.path.exists(persist_directory):
+vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
+# else:
+    # vectordb = Chroma(embedding_function=embedding_model, persist_directory=persist_directory)
 
 # LLM setup
 llm = ChatOpenAI(model="gpt-4o")
 
-# Prompt template for answering questions
+# FIXED: Simple prompt template without MessagesPlaceholder in the chain
 chat_prompt_template = """
 Role: You are a helpful assistant specialized in answering questions based on the given documents. Be precise and clear in your responses.
 
 Context:
 {context}
-
-Conversation history:
-{history}
 
 Question: {question}
 
@@ -50,72 +56,71 @@ Instructions:
 - Always cite the specific document(s) and page number(s) you used to answer the question
 - Format your citations like: "According to [Document Name] (Page X)..." or "As mentioned in [Document Name] (Page X)..."
 - If information comes from multiple sources, cite all relevant sources
+- Use the conversation history to provide contextual responses when relevant
 """
 
+# FIXED: Create prompt template that RunnableWithMessageHistory can work with
 chat_prompt = ChatPromptTemplate.from_messages([
     ("system", chat_prompt_template),
-    MessagesPlaceholder(variable_name="history"),
     ("human", "{question}"),
 ])
 
 # Format retrieved documents into a single string
 def format_docs(docs):
     formatted_docs = []
-    seen_content = set()  # To avoid duplicate content
+    seen_content = set()
     
     for doc in docs:
-        # Extract source information from metadata
         source = doc.metadata.get('source', 'Unknown source')
         page = doc.metadata.get('page', 'Unknown page')
-        
-        # Create a hash of the content to check for duplicates
-        content_hash = hash(doc.page_content[:100])  # Use first 100 chars as identifier
+        content_hash = hash(doc.page_content[:100])
         
         if content_hash not in seen_content:
             seen_content.add(content_hash)
-            # Format document with source info
             doc_info = f"Source: {os.path.basename(source)} (Page {page + 1})\nContent: {doc.page_content}"
             formatted_docs.append(doc_info)
     
     return "\n\n---\n\n".join(formatted_docs)
 
-# Retriever function (search top k relevant docs)
-def get_retriever(k=20):  # Increased from 15 to get more relevant chunks
+# Retriever function
+def get_retriever(k=20):
     return vectordb.as_retriever(
-        search_type="mmr",  # Maximum Marginal Relevance for diverse results
+        search_type="mmr",
         search_kwargs={
             "k": k,
-            "fetch_k": k * 2,  # Fetch more candidates for MMR
-            "lambda_mult": 0.7  # Balance between relevance and diversity
+            "fetch_k": k * 2,
+            "lambda_mult": 0.7
         }
     )
 
-# Define chain with message history for conversation continuity
+# Chat history store - FIXED: Use proper session management
+if 'message_histories' not in st.session_state:
+    st.session_state.message_histories = {}
+
+def get_message_history(session_id):
+    """Get or create message history for a session"""
+    if session_id not in st.session_state.message_histories:
+        st.session_state.message_histories[session_id] = ChatMessageHistory()
+    # print("History",st.session_state.message_histories[session_id])
+    return st.session_state.message_histories[session_id]
+
+# FIXED: Simplified chain without redundant history handling
 chain = (
     {
         "context": RunnableLambda(lambda inputs: format_docs(get_retriever().invoke(inputs["question"]))),
         "question": itemgetter("question"),
-        "history": itemgetter("history"),
     }
     | chat_prompt
     | llm
     | StrOutputParser()
 )
 
-# Chat history store
-message_histories = {}
-
-def get_message_history(session_id):
-    if session_id not in message_histories:
-        message_histories[session_id] = ChatMessageHistory()
-        message_histories[session_id].add_ai_message("Hello! How can I assist you today?")
-    return message_histories[session_id]
-
+# Chain with history - FIXED: Proper configuration for RunnableWithMessageHistory
 chain_with_history = RunnableWithMessageHistory(
     chain,
     get_message_history,
     input_messages_key="question",
-    history_messages_key="history",
+    history_messages_key="chat_history",  # Changed from "history" to avoid conflict
 )
 
 def process_single_pdf(pdf_file):
@@ -129,14 +134,12 @@ def process_single_pdf(pdf_file):
     except Exception as e:
         return None, f"Error processing {pdf_file}: {e}"
 
-
 def load_and_index_pdf(folder_path, max_workers=4, batch_size=50, force_reindex=False):
     """Load and index all PDF files from a folder and its subfolders with parallel processing"""
     
     if not force_reindex:
         return
 
-    # Get all PDF files recursively from the folder
     pdf_files = glob.glob(os.path.join(folder_path, "**", "*.pdf"), recursive=True)
     
     if not pdf_files:
@@ -148,13 +151,10 @@ def load_and_index_pdf(folder_path, max_workers=4, batch_size=50, force_reindex=
     all_texts = []
     errors = []
     
-    # Process PDFs in parallel with progress bar
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks
         future_to_pdf = {executor.submit(process_single_pdf, pdf_file): pdf_file 
                          for pdf_file in pdf_files}
         
-        # Process results with progress bar
         for future in tqdm(concurrent.futures.as_completed(future_to_pdf), 
                           total=len(pdf_files), desc="Processing PDFs"):
             texts, error = future.result()
@@ -171,7 +171,6 @@ def load_and_index_pdf(folder_path, max_workers=4, batch_size=50, force_reindex=
     if all_texts:
         print(f"\nIndexing {len(all_texts)} text chunks in batches...")
         
-        # Add documents in batches for better performance
         for i in tqdm(range(0, len(all_texts), batch_size), desc="Adding to vector store"):
             batch = all_texts[i:i + batch_size]
             vectordb.add_documents(batch)
@@ -181,9 +180,8 @@ def load_and_index_pdf(folder_path, max_workers=4, batch_size=50, force_reindex=
     else:
         print("No documents were successfully processed.")
 
-
-# Example interactive chat function
-def chat(session_id, k=20):  # Increased k for more context
+def chat(session_id, k=20):
+    """Example interactive chat function for non-Streamlit usage"""
     print("Starting chat session. Type 'exit' to quit.")
     while True:
         user_input = input("You: ")
@@ -199,9 +197,85 @@ def chat(session_id, k=20):  # Increased k for more context
         except Exception as e:
             print("Error:", e)
 
-if __name__ == "__main__":
-    # Example usage:
-    # 1. Load your PDF document(s) once:
-    load_and_index_pdf(r"D:\Coding\Job\Salik Labs\g2m_AI\docs", max_workers=8, batch_size=1000,force_reindex=False)
-    # 2. Start chat session with a unique ID:
-    chat(session_id="default_session")
+# STREAMLIT UI
+st.set_page_config(page_title="PDF Document Chatbot", page_icon="🤖")
+st.title("📄 PDF Document Chatbot")
+
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "session_id" not in st.session_state:
+    st.session_state.session_id = "streamlit_session"
+
+def submit_question():
+    """FIXED: Simplified submit function that lets LangChain handle history"""
+    question = st.session_state.user_input.strip()
+    if question:
+        # Add user message to Streamlit UI
+        st.session_state.messages.append({"role": "user", "content": question})
+        
+        try:
+            # FIXED: Let LangChain handle the history automatically
+            response = chain_with_history.invoke(
+                {"question": question},
+                config={"configurable": {"session_id": st.session_state.session_id}}
+            )
+            
+            # Add bot response to Streamlit UI
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            
+        except Exception as e:
+            error_msg = f"Error: {e}"
+            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+        
+        # Clear input
+        st.session_state.user_input = ""
+
+# Chat container
+chat_container = st.container()
+
+# Input form
+with st.form(key="chat_form", clear_on_submit=True):
+    user_input = st.text_area(
+        "Your question:", 
+        key="user_input", 
+        placeholder="Type your question here...",
+        height=None,
+        label_visibility="collapsed"
+    )
+    submit_button = st.form_submit_button(label="Send", on_click=submit_question)
+
+# JavaScript for Enter key submission
+st.markdown("""
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const textArea = document.querySelector('textarea[data-testid="stTextArea"]');
+    if (textArea) {
+        textArea.addEventListener('keydown', function(event) {
+            if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.altKey) {
+                event.preventDefault();
+                const form = textArea.closest('form');
+                if (form) {
+                    form.requestSubmit();
+                }
+            }
+        });
+    }
+});
+</script>
+""", unsafe_allow_html=True)
+
+# Display chat messages
+with chat_container:
+    for msg in st.session_state.messages:
+        if msg["role"] == "user":
+            st.chat_message("user").markdown(msg["content"])
+        else:
+            st.chat_message("assistant").markdown(msg["content"])
+
+# Clear chat button
+if st.button("Clear chat"):
+    st.session_state.messages = []
+    if st.session_state.session_id in st.session_state.message_histories:
+        del st.session_state.message_histories[st.session_state.session_id]
+    st.rerun()
