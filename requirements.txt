@@ -9,3 +9,4 @@ protobuf>=4.21.6,<5.0.0
 pypdf
 boto3
 requests
+pysqlite3-binary

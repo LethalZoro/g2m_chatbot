@@ -1,5 +1,7 @@
 import os
-
+__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 # Fix protobuf compatibility issue
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
