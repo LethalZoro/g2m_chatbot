@@ -51,7 +51,7 @@ def initialize_vector_store():
         # Verify the vector store is actually valid by checking for key files
         chroma_db_path = os.path.join(local_path, "chroma.sqlite3")
         if os.path.exists(chroma_db_path):
-            st.info("📁 Using local vector store")
+            # st.info("📁 Using local vector store")
             return local_path
         else:
             st.warning("⚠️ Local vector store exists but appears incomplete, re-downloading...")
@@ -277,6 +277,7 @@ Question: {question}
 
 Instructions:
 - Answer in clear, simple language based on the provided context
+- Always answer whatever the user asks, even if the context is not sufficient
 - Always cite the specific document(s) and page number(s) you used to answer the question
 - Format your citations like: "According to [Document Name] (Page X)..." or "As mentioned in [Document Name] (Page X)..."
 - If information comes from multiple sources, cite all relevant sources
