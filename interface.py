@@ -32,7 +32,12 @@ import requests
 from botocore.exceptions import NoCredentialsError, ClientError
 
 # load_dotenv()
-
+embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=2000,
+    chunk_overlap=400,
+    separators=["\n\n", "\n", ".", " ", ""]
+)
 
 st.set_page_config(page_title="PDF Document Chatbot", page_icon="🤖")
 st.title("📄 PDF Document Chatbot")
@@ -202,12 +207,7 @@ if not verify_vector_store(persist_directory):
 
 
 # Setup embeddings and text splitter with optimized settings
-embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=2000,
-    chunk_overlap=400,
-    separators=["\n\n", "\n", ".", " ", ""]
-)
+
 vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
 
 
