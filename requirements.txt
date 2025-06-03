@@ -4,7 +4,7 @@ langchain-community
 langchain-openai
 langchain-core
 python-dotenv
-chromadb==0.4.15
+chromadb==0.3.29
 protobuf>=4.21.6,<5.0.0
 pypdf
 boto3
