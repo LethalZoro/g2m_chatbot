@@ -1,0 +1,5 @@
+fastapi
+google_cloud_aiplatform
+pydantic
+python-dotenv
+uvicorn

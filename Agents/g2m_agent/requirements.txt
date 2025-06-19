@@ -1,0 +1,7 @@
+google-adk==1.2.1
+google-cloud-aiplatform==1.95.1
+google-cloud-storage==2.19.0
+openai==1.82.1
+pinecone==6.0.2
+elasticsearch==9.0.2
+python-dotenv
