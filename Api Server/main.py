@@ -1,16 +1,17 @@
 import os
 import sys
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import json
 import uvicorn
 import vertexai
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, Form, UploadFile
 from pydantic import BaseModel, Field
 from vertexai import agent_engines
 from vertexai.preview import reasoning_engines
 import uuid
-
+from google.cloud import storage
+from vertexai.generative_models import Part
 
 # --- FastAPI App Initialization ---
 # Initialize the FastAPI app with metadata for the documentation
@@ -28,6 +29,7 @@ load_dotenv()
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
 LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION")
 BUCKET = os.getenv("GOOGLE_CLOUD_STAGING_BUCKET")
+GCS_UPLOAD_BUCKET = "g2m_temporary_files" # Bucket for user file uploads
 
 # A single startup event to initialize Vertex AI and check for required variables
 @app.on_event("startup")
@@ -93,31 +95,30 @@ def create_new_session(resource_id: str, user_id: str) -> Dict[str, Any]:
 
 
 def send_agent_message(
-    resource_id: str, user_id: str, session_id: str, message: str
+    resource_id: str,
+    user_id: str,
+    session_id: str,
+    message_parts: List[Part]
 ) -> List[Dict[str, Any]]:
-    """Sends a message to the agent and streams the response."""
+    """Sends a message (composed of multiple parts) to the agent and streams the response."""
     try:
-        print(f"Sending message with params: resource_id={resource_id}, user_id={user_id}, session_id={session_id}, message={message}")
+        print(f"Sending message with params: resource_id={resource_id}, user_id={user_id}, session_id={session_id}")
         remote_app = agent_engines.get(resource_id)
         print("Got remote app:", remote_app)
-        
-        # Generate a unique invocation ID
-        invocation_id = str(uuid.uuid4())
-        print("Generated invocation_id:", invocation_id)
-        
+
+        print(f"Sending message with parts: {message_parts}")
         events = []
         for event in remote_app.stream_query(
             user_id=user_id,
             session_id=session_id,
-            message=message
+            message=message_parts
         ):
-            # print("Event:", event)
+            print("Received event:", event)
             events.append(event)
-
-        # print("Response events:", json.dump(events))
         return events
+
     except Exception as e:
-        print("Error in send_agent_message:", str(e))
+        print(f"Error in send_agent_message: {str(e)}")
         raise e
 
 
@@ -156,41 +157,73 @@ def handle_create_session(session_req: SessionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/deployments/sessions/send", response_model=MessageResponse, tags=["Sessions"])
-def handle_send_message(msg_req: MessageRequest):
+def handle_send_message(
+    user_id: str = Form(...),
+    resource_id: str = Form(...),
+    session_id: str = Form(...),
+    msg_req: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None)
+):
     """
-    Sends a message to a specific session and gets the agent's response.
+    Sends a message (and optionally a file) to a specific session and gets the agent's response.
+    If a file is provided, its URI is included in a JSON payload sent to the agent.
     """
     try:
-        # print("Received message request:", msg_req.model_dump())
+        gcs_uri = None
+        # Handle file upload: upload to GCS and get the URI
+        if file:
+            print(f"Uploading file: {file.filename}")
+            storage_client = storage.Client()
+            bucket_name = "g2m_temporary_files"
+            bucket = storage_client.bucket(bucket_name)
+
+            # Create a unique name for the file in GCS to avoid collisions
+            name, extension = os.path.splitext(file.filename)
+            unique_filename = f"{name}-{uuid.uuid4()}{extension}"
+            blob = bucket.blob(unique_filename)
+
+            # Upload the file from the stream
+            blob.upload_from_file(file.file)
+            print(f"File {file.filename} uploaded to {unique_filename} in bucket {bucket_name}.")
+
+            gcs_uri = f"gs://{bucket_name}/{unique_filename}"
+
+        # Handle text message
+        message_text = msg_req
+        if file and not message_text:
+            message_text = "give me a summary of the document"
+
+        # Construct the JSON payload
+        payload = {}
+        if message_text:
+            payload["message"] = message_text
+        if gcs_uri:
+            payload["gcs_uri"] = gcs_uri
+
+        if not payload:
+            raise HTTPException(status_code=400, detail="A message or a file is required.")
+
+        # Create a single message part with the JSON payload
+        message_content = json.dumps(payload)
+
+
+        # Pass the parts to the core agent function
         response_events = send_agent_message(
-            msg_req.resource_id,
-            msg_req.user_id,
-            msg_req.session_id,
-            msg_req.msg_req
+            resource_id=resource_id,
+            user_id=user_id,
+            session_id=session_id,
+            message_parts=message_content
         )
-        # print("Final response events:", response_events)
 
         if not response_events:
-            # Return a valid, empty response
             return {"response": []}
-
-        # for event in reversed(response_events):
-        #     if 'content' in event and event.get('content', {}).get('role') == 'model':
-        #         try:
-        #             final_text = event['content']['parts'][0]['text']
-        #             # --- FIX: Wrap the final text in a dictionary ---
-        #             return {"response": [{"text": final_text}]}
-        #         except (KeyError, IndexError, TypeError):
-        #             # --- FIX: Wrap the error message in a dictionary ---
-        #             return {"response": [{"error": "Error parsing response from agent"}]}
+        print("Response events received:", response_events)
         return {"response": response_events}
-        
-        # --- FIX: Wrap the final message in a dictionary ---
-        return {"response": [{"info": "No valid response content from agent"}]}
-        
+
     except Exception as e:
-        print("Error in handle_send_message:", str(e))
+        print(f"Error in handle_send_message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
 

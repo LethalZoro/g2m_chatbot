@@ -1,4 +1,3 @@
-
 import asyncio
 import json
 import time
@@ -11,7 +10,7 @@ from vertexai.language_models import TextGenerationModel
 from vertexai.generative_models import GenerativeModel,  Tool, Part
 from google.cloud.aiplatform_v1beta1 import Tool as GapicTool
 from datetime import date, datetime
-
+import uuid
 import vertexai
 from dotenv import load_dotenv
 from elasticsearch import Elasticsearch
@@ -28,6 +27,18 @@ from vertexai import agent_engines
 from google.cloud import bigquery
 from google.cloud import storage
 from google.api_core.exceptions import NotFound
+import os
+import re
+from typing import AsyncGenerator
+
+from google.cloud import storage
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
+from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings
+
+from google.adk.agents import BaseAgent
+from google.adk.events import Event, EventActions
 # Load environment variables from a .env file
 load_dotenv()
 
@@ -47,6 +58,8 @@ def get_secret(secret_id: str, version_id: str = "latest") -> str:
 
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
 
+
+
 class ContextualizerAgent(BaseAgent):
     """
     An agent that processes conversational history to transform a follow-up
@@ -60,14 +73,26 @@ class ContextualizerAgent(BaseAgent):
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
 
-        # 1. Get the new user query and the chat history from the state
+        # 1. Get the new user query from the JSON payload in the message
         new_user_query = ""
+        gcs_uri = None
         if hasattr(ctx, 'user_content') and ctx.user_content and ctx.user_content.parts:
-            new_user_query = ctx.user_content.parts[0].text
-        
+            # The JSON payload is expected in the first text part
+            part_text = ctx.user_content.parts[0].text
+            try:
+                payload = json.loads(part_text)
+                new_user_query = payload.get("message", "")
+                gcs_uri = payload.get("gcs_uri")
+                print(f'[{self.name}] Parsed payload: message="{new_user_query}", gcs_uri="{gcs_uri}"')
+            except (json.JSONDecodeError, IndexError):
+                # Fallback for plain text messages for backward compatibility or testing
+                print(f"[{self.name}] WARN: Could not parse JSON from message, treating as plain text.")
+                new_user_query = part_text
+
         if not new_user_query:
             yield Event(
                 author=self.name,
+                invocation_id=ctx.invocation_id,
                 actions=EventActions(state_delta={"error_message_context": "FATAL: Could not find the user's query text."})
             )
             return
@@ -129,6 +154,148 @@ class ContextualizerAgent(BaseAgent):
             )
         )
 
+
+class FileProcessingAgent(BaseAgent):
+    name: str = "FileProcessingAgent"
+    description: str = "Processes an uploaded file from a GCS URI, extracts text, and creates a retriever."
+    output_key: str = "file_retriever"
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+        gcs_uri_from_message = None
+        file_name_from_message = None
+
+        # 1. Check for a GCS URI in the JSON payload of the user's message
+        if hasattr(ctx, 'user_content') and ctx.user_content and ctx.user_content.parts:
+            part_text = ctx.user_content.parts[0].text
+            try:
+                payload = json.loads(part_text)
+                gcs_uri_from_message = payload.get("gcs_uri")
+                if gcs_uri_from_message:
+                    # Extract filename from URI (text after the last '/')
+                    file_name_from_message = gcs_uri_from_message.split('/')[-1]
+                    print(f"[{self.name}] Found GCS URI in message payload: {gcs_uri_from_message}")
+            except (json.JSONDecodeError, IndexError):
+                print(f"[{self.name}] WARN: Could not parse JSON from message, cannot find GCS URI.")
+
+        # 2. Get existing file context from the session state
+        existing_file_context = ctx.session.state.get("file_retriever")
+        existing_gcs_uri = ctx.session.state.get("gcs_file_uri")
+        existing_file_name = ctx.session.state.get("processed_file_name")
+
+        # 3. Decide which file to process
+        gcs_file_uri_to_process = None
+        file_name_to_process = None
+
+        if gcs_uri_from_message:
+            # A new file has been uploaded in this turn.
+            print(f"[{self.name}] Processing new file from message: {file_name_from_message}")
+            gcs_file_uri_to_process = gcs_uri_from_message
+            file_name_to_process = file_name_from_message
+        elif existing_gcs_uri and existing_file_name:
+            # No new file, but one exists in the session. Reuse it for follow-up questions.
+            print(f"[{self.name}] Reusing existing file from session: {existing_file_name}")
+            gcs_file_uri_to_process = existing_gcs_uri
+            file_name_to_process = existing_file_name
+        else:
+            # No new file and no existing file. Nothing to do.
+            print(f"[{self.name}] No file provided in this turn or in session state. Skipping.")
+            # Yield an empty event so the chain can continue, but with no file context.
+            yield Event(
+                author=self.name,
+                invocation_id=ctx.invocation_id,
+                actions=EventActions(state_delta={self.output_key: None})
+            )
+            return
+
+        # If we are reprocessing the same file for a new query, we can optimize
+        # by checking if the query has changed significantly. For now, we re-process.
+        
+        local_temp_path = None
+        try:
+            # 4. Download file from GCS to a temporary local path for processing
+            storage_client = storage.Client()
+            temp_dir = "temp_downloads"
+            os.makedirs(temp_dir, exist_ok=True)
+            local_temp_path = os.path.join(temp_dir, file_name_to_process)
+            
+            bucket_name, blob_name = gcs_file_uri_to_process.replace("gs://", "").split("/", 1)
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(blob_name)
+            blob.download_to_filename(local_temp_path)
+            print(f"[{self.name}] File downloaded to temporary path: {local_temp_path}")
+
+            # 5. Determine the loader based on file extension and process the file
+            if local_temp_path.endswith(".pdf"):
+                loader = PyPDFLoader(local_temp_path)
+            elif local_temp_path.endswith(".docx"):
+                loader = Docx2txtLoader(local_temp_path)
+            elif local_temp_path.endswith(".txt"):
+                loader = TextLoader(local_temp_path)
+            else:
+                yield Event(
+                    author=self.name,
+                    invocation_id=ctx.invocation_id,
+                    actions=EventActions(
+                        state_delta={"error_message_file": f"Error: Unsupported file type for {file_name_to_process}."}
+                    ),
+                )
+                return
+
+            documents = loader.load()
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            texts = text_splitter.split_documents(documents)
+
+            # 6. Create embeddings and retriever for semantic search
+            file_context = ""
+            try:
+                embeddings = OpenAIEmbeddings(openai_api_key=get_secret("OPENAI_API_KEY"))
+                vectorstore = FAISS.from_documents(texts, embeddings)
+                retriever = vectorstore.as_retriever()
+                
+                user_query = ctx.session.state.get("r_user_query", "")
+                
+                if user_query:
+                    relevant_docs = retriever.invoke(user_query)
+                    file_context = "\n\n".join([doc.page_content for doc in relevant_docs])
+                else:
+                    # Fallback if no query: use the start of the document
+                    file_context = "\n\n".join([doc.page_content for doc in texts[:3]])
+                
+                print(f"[{self.name}] Extracted file context length: {len(file_context)} characters")
+                
+            except Exception as e:
+                print(f"[{self.name}] Error creating retriever: {e}. Falling back to simple text extraction.")
+                file_context = "\n\n".join([doc.page_content for doc in texts[:5]])
+
+            # 7. Yield the results and update the session state
+            yield Event(
+                author=self.name,
+                invocation_id=ctx.invocation_id,
+                actions=EventActions(
+                    state_delta={
+                        self.output_key: file_context,
+                        "processed_file_name": file_name_to_process,
+                        "gcs_file_uri": gcs_file_uri_to_process
+                    }
+                ),
+            )
+
+        except Exception as e:
+            yield Event(
+                author=self.name,
+                invocation_id=ctx.invocation_id,
+                actions=EventActions(
+                    state_delta={"error_message_file": f"An error occurred during file processing: {e}"}
+                ),
+            )
+        finally:
+            # 8. Clean up the temporary local file
+            if local_temp_path and os.path.exists(local_temp_path):
+                os.remove(local_temp_path)
+                print(f"[{self.name}] Cleaned up temporary file: {local_temp_path}")
+
 class PineconeSearcher(BaseAgent):
     name: str = "PineconeSearcher"
     description: str = "Searches a Pinecone vector DB and formats results with sources."
@@ -140,6 +307,7 @@ class PineconeSearcher(BaseAgent):
         query = ctx.session.state.get("r_user_query")
         if not query:
             yield Event(author=self.name,
+            invocation_id=ctx.invocation_id,
             actions=EventActions(
                 state_delta={"error_message_pinecone": "Error: No user_query found in state."}
             ))
@@ -222,6 +390,7 @@ class ElasticSearcher(BaseAgent):
         query = ctx.session.state.get("r_user_query")
         if not query:
             yield Event(author=self.name,
+            invocation_id=ctx.invocation_id,
             actions=EventActions(
                 state_delta={"error_message_elastic": "Error: No user_query found in state."}
             ))
@@ -355,6 +524,7 @@ class IntelligentBigQueryAgent(BaseAgent):
         user_query = ctx.session.state.get("r_user_query")
         if not user_query:
             yield Event(author=self.name,
+                        invocation_id=ctx.invocation_id,
                         actions=EventActions(
                             state_delta={"error_message_bigquery": "Error: No user_query found in state."}
                         ))
@@ -566,47 +736,78 @@ class AnswerSynthesizerAgent(BaseAgent):
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
-        
-        # 1. Retrieve the user query and data from the session state
         user_query = ctx.session.state.get("r_user_query", "No user query found in state.")
         bigquery_data = ctx.session.state.get("bigquery_data", "No BigQuery data was found in state.")
         vector_search_results = ctx.session.state.get("pinecone_data", "No Vector Search Results found in state.")
         semantic_search_results = ctx.session.state.get("elastic_data", "No Semantic Search Results found in state.")
-        print("session state: ", ctx.session.state)
-        # 2. Dynamically construct the full prompt with the retrieved data
+        file_context = ctx.session.state.get("file_retriever", "") # Get the extracted file context
+
+        # file_context is now already the relevant extracted text from the file
+
         synthesis_prompt = f"""
                 You are an expert research analyst. Your ONLY goal is to answer the user's question by creating a detailed response, which can be a table or a paragraph, using the information provided in the data sources below.
 
                 **CRITICAL INSTRUCTIONS:**
-                1.  **Prioritize Internal Knowledge First:** You must answer the user's question, '{user_query}', by following this strict order of data source priority:
-                    * **1st Priority:** `BigQuery Results`
-                    * **2nd Priority:** `Vector Search Results` (including Semantic, Pinecone, Elastic, etc.)
+                1.  **Prioritize User-Uploaded File:** You must first consult the `User-Uploaded File Context` to answer the user's question: '{user_query}'. But if there is no relevant information in the uploaded file or not enough information to answer the question, you must follow this strict order of data source priority:
+                    * **1st Priority:** `User-Uploaded File Context`
+                    * **2nd Priority:** `BigQuery Results` 
+                    * **3st Priority:** `Semantic Search Results`
+                    * **4rd Priority:** `Vector Search Results`
                     * **Last Resort:** `Web Search`
-
-                2.  **Answer from the Knowledge Stack:** First, analyze only the `BigQuery Results` and `Vector Search Results`. Synthesize a complete answer based *exclusively* on this internal data.
-
-                3.  **Use Web Search as a Fallback:** After providing an answer from the internal knowledge stack, evaluate if it fully and correctly answers the user's question. If the answer is incomplete or if no internal data is available, you MUST then use your web search tool to find the most current and relevant information.
-
-                4.  **Clearly Separate Answers:** If you use a web search, you must present that information as a separate part of the answer. For example, create a new heading like "## Additional Information from Web Search" to distinguish it from the answer derived from the internal data. Do not mix web data with internal data in the initial answer.
-
-                5.  **Handle Tables from BigQuery:** If you create a table from the `BigQuery Results`, you MUST use the exact keys from the JSON objects as the column headers. Do not invent new column names.
-
-                6.  **Cite All Sources:** If you use information from a web search, you MUST cite your sources by providing the URL at the end of your answer.
-
-                7.  **Create a 'Sources Used' Section:** At the end of your entire response, list all sources you used, including the specific BigQuery tables queried, internal file names, and any website URLs.
+                2.  **Handle Tables from BigQuery:** If you create a table from the `BigQuery Results`, you MUST use the exact keys from the JSON objects as the column headers.
+                3.  **Cite Sources:** At the end of your response, create a 'Sources Used' section listing which sources provided the information.
 
                 **Data from Sources:**
                 ---
-                --- Vector Search Results ---
-                NONE
-
-                --- Semantic Search Results ---
-                NONE
-
+                --- User-Uploaded File Context  ---
+                {file_context}
+                ---
                 --- BigQuery Results ---
                 {bigquery_data}
                 ---
+                --- Vector Search Results ---
+                {vector_search_results}
+                ---
+                --- Semantic Search Results ---
+                {semantic_search_results}
+                ---
+
+                Please provide a comprehensive answer to the user's question: "{user_query}"
                 """
+        # 2. Dynamically construct the full prompt with the retrieved data
+        # synthesis_prompt = f"""
+        #         You are an expert research analyst. Your ONLY goal is to answer the user's question by creating a detailed response, which can be a table or a paragraph, using the information provided in the data sources below.
+
+        #         **CRITICAL INSTRUCTIONS:**
+        #         1.  **Prioritize Internal Knowledge First:** You must answer the user's question, '{user_query}', by following this strict order of data source priority:
+        #             * **1st Priority:** `BigQuery Results`
+        #             * **2nd Priority:** `Vector Search Results` (including Semantic, Pinecone, Elastic, etc.)
+        #             * **Last Resort:** `Web Search`
+
+        #         2.  **Answer from the Knowledge Stack:** First, analyze only the `BigQuery Results` and `Vector Search Results`. Synthesize a complete answer based *exclusively* on this internal data.
+
+        #         3.  **Use Web Search as a Fallback:** After providing an answer from the internal knowledge stack, evaluate if it fully and correctly answers the user's question. If the answer is incomplete or if no internal data is available, you MUST then use your web search tool to find the most current and relevant information.
+
+        #         4.  **Clearly Separate Answers:** If you use a web search, you must present that information as a separate part of the answer. For example, create a new heading like "## Additional Information from Web Search" to distinguish it from the answer derived from the internal data. Do not mix web data with internal data in the initial answer.
+
+        #         5.  **Handle Tables from BigQuery:** If you create a table from the `BigQuery Results`, you MUST use the keys from the JSON objects as the column headers. Do not invent new column names.
+
+        #         6.  **Cite All Sources:** If you use information from a web search, you MUST cite your sources by providing the URL at the end of your answer.
+
+        #         7.  **Create a 'Sources Used' Section:** At the end of your entire response, list all sources you used, including the specific BigQuery tables queried, internal file names, and any website URLs.
+
+        #         **Data from Sources:**
+
+        #         --- Vector Search Results ---
+        #         NONE
+
+        #         --- Semantic Search Results ---
+        #         NONE
+
+        #         --- BigQuery Results ---
+        #         {bigquery_data}
+        #         ---
+        #         """
         
                 # --- BigQuery Results ---
                 # NONE
@@ -661,12 +862,14 @@ vertexai.init(
     staging_bucket="gs://ask-g2m-agent",
 )
 
+
 data_gatherer = ParallelAgent(
     name="ConcurrentDataFetcher",
     sub_agents=[
         PineconeSearcher(output_key="pinecone_data"),
         ElasticSearcher(output_key="elastic_data"),
         IntelligentBigQueryAgent(output_key="bigquery_data"),
+        FileProcessingAgent(output_key="file_retriever"), 
     ]
 )
 
@@ -740,9 +943,9 @@ app = reasoning_engines.AdkApp(
 
 
 remote_app= agent_engines.create(
-    display_name="G2M Agent v1.6 Big Quer with web search",
+    display_name="G2M Agent v1.7 File upload",
     agent_engine=app,
-    requirements=["google-adk==1.4.2", "google-cloud-aiplatform==1.98.0", "google-cloud-storage==2.19.0", "openai==1.82.1", "pinecone==6.0.2", "elasticsearch==9.0.2", "python-dotenv","google-cloud==0.34.0"],
+    requirements=["google-adk==1.4.2", "google-cloud-aiplatform==1.98.0", "google-cloud-storage==2.19.0", "openai==1.82.1", "pinecone==6.0.2", "elasticsearch==9.0.2", "python-dotenv","google-cloud==0.34.0","langchain==0.3.25","langchain-openai==0.3.18","langchain-community==0.3.24","pypdf==5.6.0"],
     extra_packages=["./g2m_agent"]
 )
 

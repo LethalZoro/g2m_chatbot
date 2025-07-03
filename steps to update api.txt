@@ -1,0 +1,3 @@
+gcloud builds submit --tag us-central1-docker.pkg.dev/g2m-dev/my-app-repo/my-fastapi-app:latest
+
+gcloud run deploy my-fastapi-service --image=us-central1-docker.pkg.dev/g2m-dev/my-app-repo/my-fastapi-app:latest --platform=managed --region=us-central1 --service-account=my-vertex-app-sa@g2m-dev.iam.gserviceaccount.com  --set-env-vars="GOOGLE_CLOUD_PROJECT=g2m-dev,GOOGLE_CLOUD_LOCATION=us-central1,GOOGLE_CLOUD_STAGING_BUCKET=g2m-agent-api" --allow-unauthenticated
