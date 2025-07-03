@@ -190,7 +190,7 @@ if not st.session_state.agent_selected:
     # The "value" is the pretty, user-friendly name you want to show.
     AGENT_DISPLAY_NAMES = {
         # Technical Name (from your API)         : User-Facing Name (what you want to show)
-        
+        "projects/469937863197/locations/us-central1/reasoningEngines/632782135924621312" : "Ask-G2M Agent With File Upload",
         "projects/469937863197/locations/us-central1/reasoningEngines/1687979047054737408": "Ask-G2M Agent With BigQuery and Google Search",
         "projects/469937863197/locations/us-central1/reasoningEngines/1084496696987090944": "Ask-G2M Agent With BigQuery Gemini 2.5 Pro",
         "projects/469937863197/locations/us-central1/reasoningEngines/5418085438424350720": "Ask-G2M Agent Gemini 2.5 Pro",
@@ -248,7 +248,7 @@ if st.session_state.agent_selected:
             st.markdown(message["content"])
 
     # ID of the agent that supports file uploads
-    FILE_UPLOAD_AGENT_ID = "projects/469937863197/locations/us-central1/reasoningEngines/1029046126575091712"
+    FILE_UPLOAD_AGENT_ID = "projects/469937863197/locations/us-central1/reasoningEngines/632782135924621312"
 
     # --- Conditionally show the correct input based on the selected agent ---
     if st.session_state.resource_id == FILE_UPLOAD_AGENT_ID:
