@@ -3,3 +3,5 @@ google_cloud_aiplatform
 pydantic
 python-dotenv
 uvicorn
+google-cloud-storage
+python-multipart
